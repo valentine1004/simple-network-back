@@ -14,15 +14,14 @@ def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = None
-
-        if 'x-access-token' in request.headers:
-            token = request.headers['x-access-token']
+        if 'X-Access-Token' in request.headers:
+            token = request.headers['X-Access-Token']
 
         if not token:
             return jsonify({'message': 'Token is missing!'}), 401
 
         try:
-            data = jwt.decode(token, app.config['SECRET_KEY'])
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
             conn = mysql.connect()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
             cursor.execute("SELECT * FROM user WHERE id=%s", data['id'])
@@ -40,12 +39,9 @@ def token_required(f):
 @cross_origin()
 @token_required
 def get_all_users(current_user):
-
-    print('user', current_user)
-
+    conn = mysql.connect()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
     try:
-        conn = mysql.connect()
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
         cursor.execute("SELECT * FROM user")
         rows = cursor.fetchall()
         res = jsonify(rows)
@@ -61,8 +57,24 @@ def get_all_users(current_user):
 
 @app.route('/user/<user_id>', methods=['GET'])
 @cross_origin()
-def get_one_user():
-    return ''
+@token_required
+def get_one_user(current_user, user_id):
+    conn = mysql.connect()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT * FROM user WHERE id=%s", user_id)
+        user = cursor.fetchall()
+        user_profile = user[0]
+        user_profile.pop('password', None)
+        res = jsonify(user_profile)
+        res.status_code = 200
+
+        return res
+    except Exception as e:
+        print(e)
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.route('/user', methods=['POST'])
@@ -112,21 +124,23 @@ def delete_user():
 @app.route('/login', methods=['POST'])
 @cross_origin()
 def login():
-    auth = request.authorization
+    auth = request.get_json()
 
-    if not auth or not auth.username or not auth.password:
+    if not auth or not auth['username'] or not auth['password']:
         return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
 
     conn = mysql.connect()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute("SELECT * FROM user WHERE username=%s", auth.username)
+    cursor.execute("SELECT * FROM user WHERE username=%s", auth['username'])
     user = cursor.fetchall()
     if not user:
         return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
 
-    if check_password_hash(user[0]['password'], auth.password):
-        token = jwt.encode({'id': user[0]['id'], 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
-        return jsonify({'token': token.decode('UTF-8')})
+    if check_password_hash(user[0]['password'], auth['password']):
+        token = jwt.encode({'id': user[0]['id'], 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'], algorithm='HS256')
+        user_profile = user[0]
+        user_profile.pop('password', None)
+        return jsonify({'token': token.decode('UTF-8'), 'user': user_profile})
 
     return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
 
